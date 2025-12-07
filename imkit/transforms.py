@@ -125,7 +125,7 @@ def min_area_rect(points, assume_hull=False):
     if m == 1:
         x, y = hull[0]
         rect = ((x, y), (0.0, 0.0), 0.0)
-        return rect, np.array([[x, y]] * 4, dtype=np.float32)
+        return rect
     if m == 2:
         (x0, y0), (x1, y1) = hull
         dx, dy = x1 - x0, y1 - y0
@@ -163,7 +163,7 @@ def min_area_rect(points, assume_hull=False):
     if edges.shape[0] == 0:
         x, y = hull[0]
         rect = ((x, y), (0.0, 0.0), 0.0)
-        return rect, np.array([[x, y]] * 4, dtype=np.float32)
+        return rect
 
     # Unit vectors for candidate x-axes (ux) and corresponding y-axes (uy)
     ux = edges / edge_len[:, None]
@@ -190,27 +190,50 @@ def min_area_rect(points, assume_hull=False):
     cy_rot = 0.5 * (min_y[k] + max_y[k])
     center = np.dot([cx_rot, cy_rot], np.column_stack((best_ux, best_uy)).T)
 
-    angle = float(np.degrees(np.arctan2(best_ux[1], best_ux[0])))
+    # Get the dimensions along each axis
+    dim_along_ux = float(widths[k])   # dimension along best_ux
+    dim_along_uy = float(heights[k])  # dimension along best_uy (perpendicular)
     
-    # Match cv2's width/height assignment convention:
-    # cv2 assigns width=edge2_length, height=edge1_length, angle=edge2_angle
-    # Our best_ux corresponds to edge1, best_uy to edge2; swap width/height
-    width = float(heights[k])  # cv2's width = our height (along best_uy)
-    height = float(widths[k])  # cv2's height = our width (along best_ux)
+    # Calculate angle of best_ux from horizontal
+    angle_ux = float(np.degrees(np.arctan2(best_ux[1], best_ux[0])))
     
-    # And use best_uy angle (90° rotated from best_ux) to mimic cv2
-    angle = float(np.degrees(np.arctan2(best_uy[1], best_uy[0])))
-
-    # Normalize angle to match cv2 convention: [0, 90) with 90 for axis-aligned
-    if abs(angle) < 1e-10 or abs(abs(angle) - 90) < 1e-10 or abs(abs(angle) - 180) < 1e-10:
-        # Axis-aligned case
+    # Normalize angle_ux to range [-180, 180)
+    while angle_ux < -180:
+        angle_ux += 360
+    while angle_ux >= 180:
+        angle_ux -= 360
+    
+    # OpenCV's cv2.minAreaRect convention:
+    # For axis-aligned rectangles, cv2 uses angle=90.0 and swaps the dimensions
+    # (width gets the y-extent, height gets the x-extent)
+    # For rotated rectangles, angle indicates the rotation of the first (width) edge
+    
+    # Check if this is axis-aligned (angle near 0 or 90 degrees)
+    is_horizontal = abs(angle_ux) < 1e-6 or abs(abs(angle_ux) - 180) < 1e-6
+    is_vertical = abs(abs(angle_ux) - 90) < 1e-6
+    
+    if is_horizontal:
+        # Horizontal edge: cv2 uses angle=90.0 and swaps dimensions
+        # width = vertical extent, height = horizontal extent
+        width = dim_along_uy
+        height = dim_along_ux
+        angle = 90.0
+    elif is_vertical:
+        # Vertical edge: cv2 uses angle=90.0 with standard dimensions
+        # width = horizontal extent, height = vertical extent  
+        width = dim_along_ux
+        height = dim_along_uy
         angle = 90.0
     else:
-        # Normalize to [0, 90)
-        while angle < 0:
-            angle += 180
-        while angle >= 90:
-            angle -= 90
+        # Non-axis-aligned: convert angle to range (0, 90]
+        width = dim_along_ux
+        height = dim_along_uy
+        angle = angle_ux
+        
+        # If angle is negative, add 90 and swap dimensions
+        if angle < 0:
+            angle += 90.0
+            width, height = height, width
 
     rect = (tuple(center), (width, height), angle)
 
@@ -338,7 +361,7 @@ def connected_components(image: np.ndarray, connectivity: int = 4) -> tuple:
     # mh.label returns the labeled image and the number of objects (excluding background)
     labeled, num_labels = mh.label(image > 0, Bc=Bc)
 
-    return num_labels, labeled
+    return num_labels+1, labeled
 
 
 def connected_components_with_stats(image: np.ndarray, connectivity: int = 4) -> tuple:
@@ -367,7 +390,7 @@ def connected_components_with_stats(image: np.ndarray, connectivity: int = 4) ->
         # Background only
         stats = np.array([[0, 0, image.shape[1], image.shape[0], image.size]], dtype=np.int32)
         centroids = np.array([[ (image.shape[1]-1)/2.0, (image.shape[0]-1)/2.0 ]], dtype=np.float64)
-        return 0, labeled, stats, centroids
+        return 1, labeled, stats, centroids
 
     # 3. Calculate statistics for all labels at once (including background label 0)
     # The output of these functions is an array where the index corresponds to the label.
@@ -408,8 +431,8 @@ def connected_components_with_stats(image: np.ndarray, connectivity: int = 4) ->
     height[sizes == 0] = 0
     
     stats = np.stack([xmin, ymin, width, height, sizes], axis=1).astype(np.int32)
-    
-    return num_labels, labeled, stats, centroids
+
+    return num_labels+1, labeled, stats, centroids
 
 
 def line(

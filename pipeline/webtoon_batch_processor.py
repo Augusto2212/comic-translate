@@ -296,10 +296,14 @@ class WebtoonBatchProcessor:
 
         # Inpainting processing
         if self.inpainting.inpainter_cache is None or self.inpainting.cached_inpainter_key != self.main_page.settings_page.get_tool_selection('inpainter'):
-            device = resolve_device(self.main_page.settings_page.is_gpu_enabled())
+            backend = 'onnx'
+            device = resolve_device(
+                self.main_page.settings_page.is_gpu_enabled(),
+                backend=backend
+            )
             inpainter_key = self.main_page.settings_page.get_tool_selection('inpainter')
             InpainterClass = inpaint_map[inpainter_key]
-            self.inpainting.inpainter_cache = InpainterClass(device, backend='onnx')
+            self.inpainting.inpainter_cache = InpainterClass(device, backend=backend)
             self.inpainting.cached_inpainter_key = inpainter_key
         
         # Progress update: Inpainting setup completed
@@ -722,6 +726,11 @@ class WebtoonBatchProcessor:
         alignment = self.main_page.button_to_alignment[render_settings.alignment_id]
         direction = render_settings.direction
         
+        # Get target language code for formatting
+        target_lang = self.main_page.image_states[image_path]['target_lang']
+        target_lang_en = self.main_page.lang_mapping.get(target_lang, None)
+        trg_lng_cd = get_language_code(target_lang_en)
+        
         page_y_position_in_scene = 0
         if webtoon_manager and vpage.physical_page_index < len(webtoon_manager.image_positions):
             page_y_position_in_scene = webtoon_manager.image_positions[vpage.physical_page_index]
@@ -763,9 +772,6 @@ class WebtoonBatchProcessor:
 
             # Store for final save (always do this)
             # Language-specific formatting for State Storage
-            target_lang = self.main_page.image_states[image_path]['target_lang']
-            target_lang_en = self.main_page.lang_mapping.get(target_lang, None)
-            trg_lng_cd = get_language_code(target_lang_en)
 
             # Use TextItemProperties for consistent text item creation
             text_props = TextItemProperties(
@@ -877,7 +883,7 @@ class WebtoonBatchProcessor:
             return
 
         # Determine the correct save path and names first for all operations
-        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        base_name = os.path.splitext(os.path.basename(image_path))[0].strip()
         extension = os.path.splitext(image_path)[1]
         directory = os.path.dirname(image_path)
         
@@ -886,7 +892,7 @@ class WebtoonBatchProcessor:
             if image_path in archive['extracted_images']:
                 archive_path = archive['archive_path']
                 directory = os.path.dirname(archive_path)
-                archive_bname = os.path.splitext(os.path.basename(archive_path))[0]
+                archive_bname = os.path.splitext(os.path.basename(archive_path))[0].strip()
                 break
         
         # Check if the page should be skipped due to no text blocks
@@ -979,7 +985,7 @@ class WebtoonBatchProcessor:
                 self.physical_page_status[physical_idx] = PageStatus.RENDERED # Mark as done
 
                 # Find archive info for correct save path
-                base_name = os.path.splitext(os.path.basename(image_path))[0]
+                base_name = os.path.splitext(os.path.basename(image_path))[0].strip()
                 extension = os.path.splitext(image_path)[1]
                 directory = os.path.dirname(image_path)
                 archive_bname = ""
@@ -987,7 +993,7 @@ class WebtoonBatchProcessor:
                     if image_path in archive['extracted_images']:
                         archive_path = archive['archive_path']
                         directory = os.path.dirname(archive_path)
-                        archive_bname = os.path.splitext(os.path.basename(archive_path))[0]
+                        archive_bname = os.path.splitext(os.path.basename(archive_path))[0].strip()
                         break
                 
                 image = imk.read_image(image_path)
@@ -1125,7 +1131,7 @@ class WebtoonBatchProcessor:
                     break
 
                 archive_path = archive['archive_path']
-                archive_bname = os.path.splitext(os.path.basename(archive_path))[0]
+                archive_bname = os.path.splitext(os.path.basename(archive_path))[0].strip()
                 archive_directory = os.path.dirname(archive_path)
                 archive_ext = os.path.splitext(archive_path)[1]
                 save_as_ext = f".{save_as_settings.get(archive_ext.lower(), 'cbz')}"

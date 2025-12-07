@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import imkit as imk
-from PIL import Image
 import numpy as np
 from typing import TYPE_CHECKING, List
 from PySide6 import QtCore, QtWidgets, QtGui
@@ -116,7 +115,17 @@ class ImageStateController:
                     self.main.image_history[file_path] = [file_path]
                     self.main.in_memory_history[file_path] = []
                     self.main.current_history_index[file_path] = 0
-                    self.save_image_state(file_path)
+                    
+                    # Initialize empty image state for new files
+                    skip_status = False
+                    self.main.image_states[file_path] = {
+                        'viewer_state': {},
+                        'source_lang': self.main.s_combo.currentText(),
+                        'target_lang': self.main.t_combo.currentText(),
+                        'brush_strokes': [],
+                        'blk_list': [],  # New images start with empty block list
+                        'skip': skip_status,
+                    }
                     
                     # Create undo stack for new file
                     stack = QtGui.QUndoStack(self.main)
@@ -248,8 +257,13 @@ class ImageStateController:
                     if file_path in self.main.image_states:
                         state = self.main.image_states[file_path]
                         # Only load language settings in webtoon mode
+                        # Block signals to prevent triggering save when loading state
+                        self.main.s_combo.blockSignals(True)
+                        self.main.t_combo.blockSignals(True)
                         self.main.s_combo.setCurrentText(state.get('source_lang', ''))
                         self.main.t_combo.setCurrentText(state.get('target_lang', ''))
+                        self.main.s_combo.blockSignals(False)
+                        self.main.t_combo.blockSignals(False)
                         
                     # Clear text edits
                     self.main.text_ctrl.clear_text_edits()
@@ -503,19 +517,8 @@ class ImageStateController:
         else:
             # In regular mode, get the current single image
             final_rgb = self.main.image_viewer.get_image_array(paint_all=True)
-        
-        pil_img = Image.fromarray(final_rgb)
-        
-        settings = QtCore.QSettings("ComicLabs", "ComicTranslate")
-        settings.beginGroup('export')
-        jpeg_quality = settings.value('jpeg_quality', 95, type=int)
-        settings.endGroup()
-        
-        file_ext = os.path.splitext(file_path)[1].lower()
-        if file_ext in ['.jpg', '.jpeg']:
-            pil_img.save(file_path, quality=jpeg_quality, optimize=True)
-        else:
-            pil_img.save(file_path)
+
+        imk.write_image(file_path, final_rgb)
 
     def save_image_state(self, file: str):
         # For regular mode only
@@ -540,30 +543,52 @@ class ImageStateController:
         self.set_image(rgb_image, push=False) 
         if file_path in self.main.image_states:
             state = self.main.image_states[file_path]
-            push_to_stack = state.get('viewer_state', {}).get('push_to_stack', False)
+            
+            # Skip state loading for newly inserted images (they have empty blk_list)
+            # This prevents loading of viewer state that might contain invalid transform data
+            if state.get('blk_list') or state.get('viewer_state', {}).get('rectangles'):
+                push_to_stack = state.get('viewer_state', {}).get('push_to_stack', False)
 
-            self.main.blk_list = state['blk_list'].copy()  # Load a copy of the list, not a reference
-            self.main.image_viewer.load_state(state['viewer_state'])
-            self.main.s_combo.setCurrentText(state['source_lang'])
-            self.main.t_combo.setCurrentText(state['target_lang'])
-            self.main.image_viewer.load_brush_strokes(state['brush_strokes'])
+                self.main.blk_list = state['blk_list'].copy()  # Load a copy of the list, not a reference
+                self.main.image_viewer.load_state(state['viewer_state'])
+                # Block signals to prevent triggering save when loading state
+                self.main.s_combo.blockSignals(True)
+                self.main.t_combo.blockSignals(True)
+                self.main.s_combo.setCurrentText(state['source_lang'])
+                self.main.t_combo.setCurrentText(state['target_lang'])
+                self.main.s_combo.blockSignals(False)
+                self.main.t_combo.blockSignals(False)
+                self.main.image_viewer.load_brush_strokes(state['brush_strokes'])
 
-            if push_to_stack:
-                self.main.undo_stacks[file_path].beginMacro('text_items_rendered')
-                for text_item in self.main.image_viewer.text_items:
-                    self.main.text_ctrl.connect_text_item_signals(text_item)
-                    command = AddTextItemCommand(self.main, text_item)
-                    self.main.undo_stacks[file_path].push(command)
-                self.main.undo_stacks[file_path].endMacro()
-                state['viewer_state'].update({'push_to_stack': False})
+                if push_to_stack:
+                    self.main.undo_stacks[file_path].beginMacro('text_items_rendered')
+                    for text_item in self.main.image_viewer.text_items:
+                        self.main.text_ctrl.connect_text_item_signals(text_item)
+                        command = AddTextItemCommand(self.main, text_item)
+                        self.main.undo_stacks[file_path].push(command)
+                    self.main.undo_stacks[file_path].endMacro()
+                    state['viewer_state'].update({'push_to_stack': False})
+                else:
+                    for text_item in self.main.image_viewer.text_items:
+                        self.main.text_ctrl.connect_text_item_signals(text_item)
+
+                for rect_item in self.main.image_viewer.rectangles:
+                    self.main.rect_item_ctrl.connect_rect_item_signals(rect_item)
+
+                self.load_patch_state(file_path)
             else:
-                for text_item in self.main.image_viewer.text_items:
-                    self.main.text_ctrl.connect_text_item_signals(text_item)
-
-            for rect_item in self.main.image_viewer.rectangles:
-                self.main.rect_item_ctrl.connect_rect_item_signals(rect_item)
-
-            self.load_patch_state(file_path)
+                # New image - just set language preferences and clear everything else
+                self.main.blk_list = []
+                # Block signals to prevent triggering save when loading state
+                self.main.s_combo.blockSignals(True)
+                self.main.t_combo.blockSignals(True)
+                self.main.s_combo.setCurrentText(state.get('source_lang', self.main.s_combo.currentText()))
+                self.main.t_combo.setCurrentText(state.get('target_lang', self.main.t_combo.currentText()))
+                self.main.s_combo.blockSignals(False)
+                self.main.t_combo.blockSignals(False)
+                self.main.image_viewer.clear_rectangles(page_switch=True)
+                self.main.image_viewer.clear_brush_strokes(page_switch=True)
+                self.main.image_viewer.clear_text_items()
 
         self.main.text_ctrl.clear_text_edits()
 

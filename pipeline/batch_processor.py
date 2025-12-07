@@ -97,7 +97,7 @@ class BatchProcessor:
             target_lang_en = self.main_page.lang_mapping.get(target_lang, None)
             trg_lng_cd = get_language_code(target_lang_en)
             
-            base_name = os.path.splitext(os.path.basename(image_path))[0]
+            base_name = os.path.splitext(os.path.basename(image_path))[0].strip()
             extension = os.path.splitext(image_path)[1]
             directory = os.path.dirname(image_path)
 
@@ -109,7 +109,7 @@ class BatchProcessor:
                 for img_pth in images:
                     if img_pth == image_path:
                         directory = os.path.dirname(archive_path)
-                        archive_bname = os.path.splitext(os.path.basename(archive_path))[0]
+                        archive_bname = os.path.splitext(os.path.basename(archive_path))[0].strip()
 
             image = imk.read_image(image_path)
 
@@ -128,7 +128,7 @@ class BatchProcessor:
 
             # Use the shared block detector from the handler
             if self.block_detection.block_detector_cache is None:
-                self.block_detection.block_detector_cache = TextBlockDetector(self.main_page.settings_page)
+                self.block_detection.block_detector_cache = TextBlockDetector(settings_page)
             
             blk_list = self.block_detection.block_detector_cache.detect(image)
 
@@ -139,8 +139,9 @@ class BatchProcessor:
 
             if blk_list:
                 # Get ocr cache key for batch processing
-                ocr_model = self.main_page.settings_page.get_tool_selection('ocr')
-                cache_key = self.cache_manager._get_ocr_cache_key(image, source_lang, ocr_model)
+                ocr_model = settings_page.get_tool_selection('ocr')
+                device = resolve_device(settings_page.is_gpu_enabled())
+                cache_key = self.cache_manager._get_ocr_cache_key(image, source_lang, ocr_model, device)
                 # Use the shared OCR processor from the handler
                 self.ocr_handler.ocr.initialize(self.main_page, source_lang)
                 try:
@@ -185,12 +186,16 @@ class BatchProcessor:
 
             # Use the shared inpainter from the handler
             if self.inpainting.inpainter_cache is None or self.inpainting.cached_inpainter_key != settings_page.get_tool_selection('inpainter'):
-                device = resolve_device(settings_page.is_gpu_enabled())
+                backend = 'onnx'
+                device = resolve_device(
+                    settings_page.is_gpu_enabled(),
+                    backend=backend
+                )
                 inpainter_key = settings_page.get_tool_selection('inpainter')
                 InpainterClass = inpaint_map[inpainter_key]
                 logger.info("pre-inpaint: initializing inpainter '%s' on device %s", inpainter_key, device)
                 t0 = time.time()
-                self.inpainting.inpainter_cache = InpainterClass(device, backend='onnx')
+                self.inpainting.inpainter_cache = InpainterClass(device, backend=backend)
                 self.inpainting.cached_inpainter_key = inpainter_key
                 t1 = time.time()
                 logger.info("pre-inpaint: inpainter initialized in %.2fs", t1 - t0)
@@ -421,7 +426,7 @@ class BatchProcessor:
 
                 archive_path = archive['archive_path']
                 archive_ext = os.path.splitext(archive_path)[1]
-                archive_bname = os.path.splitext(os.path.basename(archive_path))[0]
+                archive_bname = os.path.splitext(os.path.basename(archive_path))[0].strip()
                 archive_directory = os.path.dirname(archive_path)
                 save_as_ext = f".{save_as_settings[archive_ext.lower()]}"
 

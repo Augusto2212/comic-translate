@@ -10,6 +10,7 @@ from typing import Optional
 from modules.utils.download import ModelDownloader, ModelID
 from modules.ocr.base import OCREngine
 from modules.utils.device import get_providers
+from modules.utils.textblock import TextBlock
 from modules.utils.textblock import adjust_text_line_coordinates
 from .pororo.models.brainOCR.brainocr import Reader
 from .pororo.models.brainOCR.detection import (
@@ -24,15 +25,11 @@ from .pororo.models.brainOCR.utils import get_image_list
 from .pororo.models.brainOCR.utils import reformat_input, get_paragraph, diff
 
 
-class PororoOCREngineONNX(OCREngine):  # type: ignore
+class PororoOCREngineONNX(OCREngine):
     """Runs Pororo OCR fully with ONNXRuntime."""
 
     def __init__(self):
-        self.project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
-        model_dir = os.path.join(self.project_root, "models", "ocr", "pororo")
-        opt_file = os.path.join(model_dir, "ocr-opt.txt")
-
-        # Parse config to get recognition params & vocab
+        opt_file = ModelDownloader.get_file_path(ModelID.PORORO_ONNX, "ocr-opt.txt")
         self.opt2val = Reader.parse_options(opt_file)
         self.opt2val["vocab"] = Reader.build_vocab(self.opt2val["character"])  # type: ignore
         self.opt2val["vocab_size"] = len(self.opt2val["vocab"])
@@ -234,7 +231,7 @@ class PororoOCREngineONNX(OCREngine):  # type: ignore
         return result  # type: ignore
 
     # OCREngine interface
-    def process_image(self, img: np.ndarray, blk_list: list):  # list[TextBlock] but no direct import to avoid cycle
+    def process_image(self, img: np.ndarray, blk_list: list[TextBlock]): 
         # ensure defaults present
         self.opt2val.setdefault("batch_size", 1)
         self.opt2val.setdefault("skip_details", False)
