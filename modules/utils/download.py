@@ -89,6 +89,10 @@ class ModelID(Enum):
     # PPOCRv4 Classifier
     PPOCR_V4_CLS = "ppocr-v4-cls"
 
+    # Font Detection
+    FONT_DETECTOR_ONNX = "font-detector-onnx"
+    FONT_DETECTOR_TORCH = "font-detector-torch"
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -97,7 +101,9 @@ class ModelSpec:
     files: List[str]
     sha256: List[Optional[str]]
     save_dir: str
-    additional_urls: Optional[Dict[str, str]] = None  # dict filename -> url
+    additional_urls: Optional[Dict[str, str]] = None  # dict remote filename -> url
+    # Optional mapping of remote filename -> local filename to save as
+    save_as: Optional[Dict[str, str]] = None
 
     def as_legacy_dict(self) -> Dict[str, Union[str, List[str]]]:
         """Return a dict shaped like the old module-level *_data objects."""
@@ -134,7 +140,11 @@ class ModelDownloader:
         """Ensure model is present then return absolute paths to all its files."""
         spec = cls.registry[model] if isinstance(model, ModelID) else model
         cls.get(spec.id)  # ensure downloaded
-        return [os.path.join(spec.save_dir, f) for f in spec.files]
+        paths: List[str] = []
+        for remote_name in spec.files:
+            local_name = spec.save_as.get(remote_name, remote_name) if spec.save_as else remote_name
+            paths.append(os.path.join(spec.save_dir, local_name))
+        return paths
 
     @classmethod
     def primary_path(cls, model: Union[ModelID, ModelSpec]) -> str:
@@ -150,23 +160,48 @@ class ModelDownloader:
         spec = cls.registry[model] if isinstance(model, ModelID) else model
         # ensure downloaded
         cls.get(spec.id)
-        if file_name not in spec.files:
-            raise ValueError(f"File '{file_name}' is not declared for model {spec.id}")
-        return os.path.join(spec.save_dir, file_name)
+        # Accept either remote filename or local saved filename
+        remote_name: Optional[str] = None
+        local_name: Optional[str] = None
+
+        if file_name in spec.files:
+            remote_name = file_name
+            local_name = spec.save_as.get(remote_name, remote_name) if spec.save_as else remote_name
+        else:
+            # Try to resolve as a local saved name
+            if spec.save_as and file_name in spec.save_as.values():
+                local_name = file_name
+                # find corresponding remote name
+                for r, l in spec.save_as.items():
+                    if l == file_name:
+                        remote_name = r
+                        break
+                if remote_name is None:
+                    # Should not happen, but fallback
+                    remote_name = file_name
+            else:
+                raise ValueError(f"File '{file_name}' is not declared for model {spec.id}")
+
+        return os.path.join(spec.save_dir, local_name)
 
     @classmethod
     def file_path_map(cls, model: Union[ModelID, ModelSpec]) -> Dict[str, str]:
         """Return a dict mapping each declared filename to its absolute path (ensures download)."""
         spec = cls.registry[model] if isinstance(model, ModelID) else model
         cls.get(spec.id)
-        return {f: os.path.join(spec.save_dir, f) for f in spec.files}
+        result: Dict[str, str] = {}
+        for remote_name in spec.files:
+            local_name = spec.save_as.get(remote_name, remote_name) if spec.save_as else remote_name
+            result[local_name] = os.path.join(spec.save_dir, local_name)
+        return result
 
     @classmethod
     def is_downloaded(cls, model: Union[ModelID, ModelSpec]) -> bool:
         """Return True if all files for the model exist and match provided checksums (when present)."""
         spec = cls.registry[model] if isinstance(model, ModelID) else model
-        for file_name, expected_checksum in zip(spec.files, spec.sha256):
-            file_path = os.path.join(spec.save_dir, file_name)
+        for remote_name, expected_checksum in zip(spec.files, spec.sha256):
+            local_name = spec.save_as.get(remote_name, remote_name) if spec.save_as else remote_name
+            file_path = os.path.join(spec.save_dir, local_name)
             if not os.path.exists(file_path):
                 return False
             if expected_checksum:
@@ -229,14 +264,16 @@ def _download_spec(spec: ModelSpec):
         os.makedirs(spec.save_dir, exist_ok=True)
         print(f"Created directory: {spec.save_dir}")
 
-    for file_name, expected_checksum in zip(spec.files, spec.sha256):
-        # Check if this file has an alternative URL in additional_urls
-        if spec.additional_urls and file_name in spec.additional_urls:
-            file_url = spec.additional_urls[file_name]
+    for remote_name, expected_checksum in zip(spec.files, spec.sha256):
+        # Determine URL for remote filename
+        if spec.additional_urls and remote_name in spec.additional_urls:
+            file_url = spec.additional_urls[remote_name]
         else:
-            file_url = f"{spec.url}{file_name}"
-            
-        file_path = os.path.join(spec.save_dir, file_name)
+            file_url = f"{spec.url}{remote_name}"
+
+        # Determine local save name
+        local_name = spec.save_as.get(remote_name, remote_name) if spec.save_as else remote_name
+        file_path = os.path.join(spec.save_dir, local_name)
 
         if os.path.exists(file_path):
             # Skip checksum verification if no expected checksum is provided
@@ -254,13 +291,13 @@ def _download_spec(spec: ModelSpec):
                 else:
                     # Unknown checksum format: force re-download
                     print(
-                        f"Unknown checksum format for {file_name} (len={len(expected_checksum)}). Redownloading..."
+                        f"Unknown checksum format for {remote_name} (len={len(expected_checksum)}). Redownloading..."
                     )
                     calculated = None
                     algo = None
             except Exception:
                 # If checksum calculation fails, force re-download
-                print(f"Failed to calculate checksum for {file_name}. Redownloading...")
+                print(f"Failed to calculate checksum for {local_name}. Redownloading...")
                 calculated = None
                 algo = None
 
@@ -269,7 +306,7 @@ def _download_spec(spec: ModelSpec):
             else:
                 if calculated:
                     print(
-                        f"Checksum mismatch for {file_name}. Expected {expected_checksum}, got {calculated}. Redownloading..."
+                        f"Checksum mismatch for {local_name}. Expected {expected_checksum}, got {calculated}. Redownloading..."
                     )
 
         _download_single_file(file_url, file_path, expected_checksum)
@@ -571,6 +608,24 @@ def _register_defaults():
         files=['ch_ppocr_mobile_v2.0_cls_infer.onnx'],
         sha256=['e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c'],
         save_dir=os.path.join(models_base_dir, 'ocr', 'ppocr-v5-onnx')
+    ))
+
+    # Font Detection
+    ModelDownloader.register(ModelSpec(
+        id=ModelID.FONT_DETECTOR_ONNX,
+        url='https://huggingface.co/ogkalu/yuzumarker-font-detection-onnx/resolve/main/',
+        files=['font-detector.onnx'],
+        sha256=['99dd351e94f06e31397113602ae000a24c1d38ad76275066e844a0c836f75d4f'],
+        save_dir=os.path.join(models_base_dir, 'detection', 'font')
+    ))
+
+    ModelDownloader.register(ModelSpec(
+        id=ModelID.FONT_DETECTOR_TORCH,
+        url='https://huggingface.co/gyrojeff/YuzuMarker.FontDetection/resolve/main/',
+        files=['name%3D4x-epoch%3D84-step%3D1649340.ckpt'],
+        sha256=['9053615071c31978a3988143c9a3bdec8da53e269a8f84b5908d6f15747a1a81'],
+        save_dir=os.path.join(models_base_dir, 'detection', 'font'),
+        save_as={'name%3D4x-epoch%3D84-step%3D1649340.ckpt': 'font-detector.ckpt'}
     ))
 
 _register_defaults()
